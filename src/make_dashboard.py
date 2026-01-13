@@ -30,6 +30,26 @@ def safe_int(x):
         return x
 
 
+def build_team_color_map(teams):
+    """
+    Deterministic team -> color mapping (no web lookup needed).
+    Uses a large qualitative palette and assigns consistently.
+    """
+    # Big combined palette
+    palette = (
+        px.colors.qualitative.Bold
+        + px.colors.qualitative.D3
+        + px.colors.qualitative.G10
+        + px.colors.qualitative.Dark24
+        + px.colors.qualitative.Alphabet
+    )
+    uniq = sorted([t for t in pd.Series(teams).dropna().unique().tolist() if str(t).strip() != ""])
+    color_map = {}
+    for i, t in enumerate(uniq):
+        color_map[t] = palette[i % len(palette)]
+    return color_map
+
+
 def main():
     require_file(TOP_GAMES_CSV)
     require_file(TEAM_RANK_CSV)
@@ -37,8 +57,8 @@ def main():
     games = pd.read_csv(TOP_GAMES_CSV)
     teams = pd.read_csv(TEAM_RANK_CSV)
 
-    # ---------- Clean/standardize expected columns ----------
-    # top games expected columns (based on your generator)
+    # ---------- Normalize columns ----------
+    # Games
     for col in ["true_choke_score", "max_lead", "importance_weight", "late_weight", "points_for", "points_against"]:
         if col in games.columns:
             games[col] = pd.to_numeric(games[col], errors="coerce").fillna(0)
@@ -47,7 +67,7 @@ def main():
         if col in games.columns:
             games[col] = pd.to_numeric(games[col], errors="coerce")
 
-    # Create a readable label for charts
+    # Create readable label
     def build_label(r):
         season = safe_int(r.get("season", ""))
         rnd = r.get("round", "")
@@ -61,34 +81,49 @@ def main():
     if "label" not in games.columns:
         games["label"] = games.apply(build_label, axis=1)
 
-    games = games.sort_values("true_choke_score", ascending=False).head(50).copy()
-
-    # Team rankings cleanup
+    # Teams table
     for col in ["total_choke", "avg_choke_per_loss", "choke_rate", "playoff_losses", "playoff_games", "true_chokes_10"]:
         if col in teams.columns:
             teams[col] = pd.to_numeric(teams[col], errors="coerce").fillna(0)
 
-    # Some earlier versions name columns slightly differently
-    # Normalize if needed
+    # Normalize alternate column names if needed
     if "total_choke" not in teams.columns and "total_true_choke" in teams.columns:
         teams["total_choke"] = teams["total_true_choke"]
     if "avg_choke_per_loss" not in teams.columns and "avg_true_choke_per_loss" in teams.columns:
         teams["avg_choke_per_loss"] = teams["avg_true_choke_per_loss"]
-    if "true_chokes_10" not in teams.columns and "true_chokes_10" not in teams.columns:
-        pass
+
+    # ---------- Sort ----------
+    games = games.sort_values("true_choke_score", ascending=False).head(50).copy()
+    teams = teams.copy()
+
+    # ---------- Team colors ----------
+    team_color_map = build_team_color_map(pd.concat([games["team"], teams.get("team", pd.Series(dtype=str))], ignore_index=True))
 
     # ---------- Plotly theme ----------
     template = "plotly_dark"
+    base_layout = dict(
+        template=template,
+        font=dict(size=14),
+        margin=dict(l=30, r=30, t=70, b=30),
+        paper_bgcolor="#0b0f14",
+        plot_bgcolor="#0b0f14",
+        title=dict(x=0.02, xanchor="left")
+    )
 
-    # ---------- Chart 1: Top 25 choke games ----------
+    # ---------- Chart 1: Top 25 choke games (colored by team) ----------
     top25 = games.head(25).iloc[::-1].copy()
+
     fig1 = px.bar(
         top25,
         x="true_choke_score",
         y="label",
         orientation="h",
+        color="team",
+        color_discrete_map=team_color_map,
         title="Top 25 Biggest Playoff Chokes (True Choke Score)",
         hover_data={
+            "team": True,
+            "opp": True,
             "true_choke_score": ":.2f",
             "max_lead": True,
             "importance_weight": ":.2f",
@@ -96,17 +131,20 @@ def main():
         },
         template=template
     )
-    fig1.update_layout(height=850, margin=dict(l=20, r=20, t=60, b=20))
-    fig1.update_yaxes(title="Game", automargin=True)
+    fig1.update_layout(**base_layout, height=980, legend_title_text="Team")
+    fig1.update_yaxes(title="", automargin=True)
     fig1.update_xaxes(title="True Choke Score")
 
-    # ---------- Chart 2: Top 20 teams by total choke severity ----------
+    # ---------- Chart 2: Top 20 teams by total choke (colored by team) ----------
     teams_sorted = teams.sort_values("total_choke", ascending=False).head(20).copy()
+
     fig2 = px.bar(
         teams_sorted.iloc[::-1],
         x="total_choke",
         y="team",
         orientation="h",
+        color="team",
+        color_discrete_map=team_color_map,
         title="Top 20 Teams by Total Playoff Choke Score (2000–2025)",
         hover_data={
             "total_choke": ":.2f",
@@ -116,56 +154,66 @@ def main():
         },
         template=template
     )
-    fig2.update_layout(height=650, margin=dict(l=20, r=20, t=60, b=20))
-    fig2.update_yaxes(title="Team", automargin=True)
+    fig2.update_layout(**base_layout, height=760, showlegend=False)
+    fig2.update_yaxes(title="", automargin=True)
     fig2.update_xaxes(title="Total Choke Score")
 
-    # ---------- Chart 3: Choke Most vs Choke Worst (scatter) ----------
-    # "Most" proxy = choke_rate, "Worst" proxy = avg_choke_per_loss
+    # ---------- Chart 3: Scatter (color by team for differentiating) ----------
     if "choke_rate" in teams.columns and "avg_choke_per_loss" in teams.columns:
+        # Keep chart readable: show top 32 by total choke; otherwise too many points/colors
+        scatter_df = teams.sort_values("total_choke", ascending=False).head(32).copy()
+
         fig3 = px.scatter(
-            teams,
+            scatter_df,
             x="choke_rate",
             y="avg_choke_per_loss",
-            size="total_choke" if "total_choke" in teams.columns else None,
+            size="total_choke" if "total_choke" in scatter_df.columns else None,
+            color="team",
+            color_discrete_map=team_color_map,
             hover_name="team",
-            title="Choke Most vs Choke Worst (size = total choke score)",
+            title="Choke Most vs Choke Worst (Top 32 teams by total choke)",
             template=template
         )
-        fig3.update_layout(height=650, margin=dict(l=20, r=20, t=60, b=20))
-        fig3.update_xaxes(title="Choke Rate (10+ lead blown per playoff loss)")
+        fig3.update_layout(**base_layout, height=720, legend_title_text="Team")
+        fig3.update_xaxes(title="Choke Rate (10+ leads blown per playoff loss)")
         fig3.update_yaxes(title="Avg Choke Score per Loss")
     else:
         fig3 = go.Figure()
-        fig3.update_layout(template=template, title="Choke Most vs Choke Worst (missing columns)")
+        fig3.update_layout(**base_layout, title="Choke Most vs Choke Worst (missing columns)", height=520)
 
-    # ---------- Simple team dropdown table (top 3 chokes) ----------
-    # We'll compute top 3 for each team from the games file.
+    # ---------- Team dropdown table (Top 3 chokes) ----------
     top_by_team = games.sort_values("true_choke_score", ascending=False).groupby("team").head(3).copy()
     top_by_team["display"] = top_by_team["label"] + " | Score " + top_by_team["true_choke_score"].round(2).astype(str)
 
-    team_list = sorted(top_by_team["team"].dropna().unique().tolist())
+    team_list = sorted([t for t in top_by_team["team"].dropna().unique().tolist() if str(t).strip() != ""])
     if len(team_list) == 0:
         team_list = ["(no teams found)"]
 
-    # Create dropdown traces
     table_traces = []
     for t in team_list:
         sub = top_by_team[top_by_team["team"] == t].copy()
         rows = sub["display"].tolist()
         if len(rows) == 0:
-            rows = ["No chokes found for this team in top 50."]
+            rows = ["No chokes found for this team in the Top 50 list."]
         table_traces.append(rows)
 
-    # Initial table
-    initial_rows = table_traces[0] if table_traces else ["No data."]
     fig4 = go.Figure()
     fig4.add_trace(go.Table(
-        header=dict(values=["Top 3 Chokes (from Top 50 list)"], fill_color="black"),
-        cells=dict(values=[initial_rows])
+        header=dict(
+            values=["Team Deep Dive — Top 3 Chokes (from Top 50 list)"],
+            fill_color="#0f1621",
+            font=dict(color="#e6edf3", size=14),
+            align="left"
+        ),
+        cells=dict(
+            values=[table_traces[0] if table_traces else ["No data."]],
+            fill_color="#0b0f14",
+            font=dict(color="#e6edf3", size=13),
+            align="left",
+            height=28
+        )
     ))
 
-    # Dropdown buttons
     buttons = []
     for i, t in enumerate(team_list):
         buttons.append(dict(
@@ -175,21 +223,32 @@ def main():
         ))
 
     fig4.update_layout(
-        template=template,
-        title="Team Deep Dive — Top 3 Chokes (Dropdown)",
-        height=500,
-        margin=dict(l=20, r=20, t=60, b=20),
+        **base_layout,
+        title="Team Deep Dive (Dropdown)",
+        height=560,
         updatemenus=[dict(
             buttons=buttons,
             direction="down",
-            x=0.01,
-            y=1.12,
+            x=0.02,
+            y=1.13,
             xanchor="left",
-            yanchor="top"
+            yanchor="top",
+            bgcolor="#0f1621",
+            bordercolor="#1f2a37"
         )]
     )
 
-    # ---------- Build final HTML ----------
+    # ---------- KPI cards (sports analytics report feel) ----------
+    total_games = int(len(pd.read_csv(os.path.join(OUTPUTS_DIR, "all_team_games_playoffs.csv")))) if os.path.exists(os.path.join(OUTPUTS_DIR, "all_team_games_playoffs.csv")) else int(len(games))
+    total_chokes = int((games["true_choke_score"] > 0).sum())
+    biggest_game = games.iloc[0]["label"] if len(games) else "N/A"
+    biggest_score = float(games.iloc[0]["true_choke_score"]) if len(games) else 0.0
+    top_team = teams.sort_values("total_choke", ascending=False).iloc[0]["team"] if len(teams) else "N/A"
+
+    # ---------- Build HTML (narrower + taller report layout) ----------
+    # Make charts responsive and not "super wide/short"
+    config = {"responsive": True, "displaylogo": False}
+
     html = f"""
 <!DOCTYPE html>
 <html>
@@ -198,64 +257,118 @@ def main():
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>NFL Playoff True Choke Index Dashboard</title>
   <style>
+    :root {{
+      --bg: #0b0f14;
+      --card: #0f1621;
+      --border: #1f2a37;
+      --text: #e6edf3;
+      --muted: #9fb0c0;
+      --accent: #7aa2ff;
+    }}
     body {{
-      background: #0b0f14;
-      color: #e6edf3;
+      background: var(--bg);
+      color: var(--text);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
       margin: 0;
       padding: 0;
     }}
     .wrap {{
-      max-width: 1200px;
+      max-width: 1080px;   /* narrower = more report-like */
       margin: 0 auto;
-      padding: 24px;
+      padding: 22px 16px 40px 16px;
+    }}
+    header {{
+      padding: 6px 0 10px 0;
     }}
     h1 {{
       margin: 0 0 6px 0;
       font-size: 28px;
+      letter-spacing: 0.2px;
     }}
     p {{
-      margin: 6px 0 18px 0;
-      color: #9fb0c0;
-      line-height: 1.4;
+      margin: 6px 0 10px 0;
+      color: var(--muted);
+      line-height: 1.45;
+      font-size: 14px;
+    }}
+    .kpis {{
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin: 12px 0 16px 0;
+    }}
+    .kpi {{
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 12px 12px;
+    }}
+    .kpi .label {{
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 6px;
+    }}
+    .kpi .value {{
+      font-size: 18px;
+      font-weight: 700;
     }}
     .card {{
-      background: #0f1621;
-      border: 1px solid #1f2a37;
-      border-radius: 14px;
-      padding: 14px;
-      margin: 14px 0;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 12px;
+      margin: 12px 0;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.25);
     }}
     .small {{
-      font-size: 13px;
-      color: #9fb0c0;
+      font-size: 12px;
+      color: var(--muted);
     }}
     a {{
-      color: #7aa2ff;
+      color: var(--accent);
       text-decoration: none;
     }}
     a:hover {{
       text-decoration: underline;
     }}
+    @media (max-width: 880px) {{
+      .kpis {{ grid-template-columns: 1fr; }}
+    }}
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>NFL Playoff True Choke Index (2000–2025)</h1>
-    <p>
-      Interactive dashboard generated from play-by-play data. Scoring includes game importance, late-game collapse weighting, and special teams disasters.
-    </p>
-    <p class="small">
-      Tip: Hover points/bars for details. Zoom and pan in charts. Use the dropdown for team deep dives.
-    </p>
+    <header>
+      <h1>NFL Playoff True Choke Index (2000–2025)</h1>
+      <p>
+        Interactive sports-analytics report built from play-by-play data. Scoring blends game importance, late-game collapse weighting, and special teams disasters.
+      </p>
+      <p class="small">Tip: hover for details · zoom/pan charts · use the dropdown for team deep dives.</p>
+    </header>
 
-    <div class="card">{fig1.to_html(full_html=False, include_plotlyjs="cdn")}</div>
-    <div class="card">{fig2.to_html(full_html=False, include_plotlyjs=False)}</div>
-    <div class="card">{fig3.to_html(full_html=False, include_plotlyjs=False)}</div>
-    <div class="card">{fig4.to_html(full_html=False, include_plotlyjs=False)}</div>
+    <section class="kpis">
+      <div class="kpi">
+        <div class="label">Total playoff team-games (dataset)</div>
+        <div class="value">{total_games:,}</div>
+      </div>
+      <div class="kpi">
+        <div class="label">Choke games in Top 50 list</div>
+        <div class="value">{total_chokes:,}</div>
+      </div>
+      <div class="kpi">
+        <div class="label">#1 choke game</div>
+        <div class="value" style="font-size:14px; font-weight:600">{biggest_game}<br><span class="small">Score: {biggest_score:.2f}</span></div>
+      </div>
+    </section>
+
+    <div class="card">{fig1.to_html(full_html=False, include_plotlyjs="cdn", config=config)}</div>
+    <div class="card">{fig2.to_html(full_html=False, include_plotlyjs=False, config=config)}</div>
+    <div class="card">{fig3.to_html(full_html=False, include_plotlyjs=False, config=config)}</div>
+    <div class="card">{fig4.to_html(full_html=False, include_plotlyjs=False, config=config)}</div>
 
     <p class="small">
-      Generated by <b>make_dashboard.py</b>. Source code and methodology available in the repo README.
+      Generated by <b>make_dashboard.py</b>. Repo: <a href="https://github.com/">GitHub</a>
+      &nbsp;·&nbsp; Top team by total choke score: <b>{top_team}</b>
     </p>
   </div>
 </body>
@@ -265,7 +378,6 @@ def main():
     with open(DASHBOARD_HTML, "w", encoding="utf-8") as f:
         f.write(html)
 
-    # Simple docs index page
     index = """
 <!DOCTYPE html>
 <html>
@@ -274,9 +386,10 @@ def main():
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>NFL Playoff True Choke Index</title>
   <style>
-    body { background:#0b0f14; color:#e6edf3; font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif; padding:24px; }
+    body { background:#0b0f14; color:#e6edf3; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif; padding:24px; }
     a { color:#7aa2ff; }
-    .card { background:#0f1621; border:1px solid #1f2a37; border-radius:14px; padding:16px; max-width:900px; }
+    .card { background:#0f1621; border:1px solid #1f2a37; border-radius:16px; padding:16px; max-width:900px; box-shadow:0 10px 25px rgba(0,0,0,0.25); }
+    p { color:#9fb0c0; }
   </style>
 </head>
 <body>
@@ -295,7 +408,7 @@ def main():
     print("   ", DASHBOARD_HTML)
     print("✅ Docs index generated:")
     print("   ", INDEX_HTML)
-    print("\nOpen this file in your browser:")
+    print("\nOpen in your browser:")
     print("   ", INDEX_HTML)
 
 
