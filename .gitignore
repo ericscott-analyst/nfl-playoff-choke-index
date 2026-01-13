@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual env
+.venv/
+
+# Mac
+.DS_Store
+
+# Generated outputs
+outputs/
+images/
+
+# IDE
+.idea/
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+outputs/
+images/
+.idea/
+
+
