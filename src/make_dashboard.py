@@ -95,6 +95,21 @@ def try_load_team_meta():
         return None
 
 
+def _lock_plotly_interactions(fig: go.Figure) -> go.Figure:
+    """
+    Make charts scroll-friendly on mobile by disabling drag interactions and zoom/pan ranges.
+    This prevents the "chart steals scrolling / disappears" feel.
+    """
+    fig.update_layout(dragmode=False)
+    # fixedrange per axis where possible
+    try:
+        fig.update_xaxes(fixedrange=True)
+        fig.update_yaxes(fixedrange=True)
+    except Exception:
+        pass
+    return fig
+
+
 def main():
     require_file(TOP_GAMES_CSV)
     require_file(TEAM_RANK_CSV)
@@ -119,7 +134,15 @@ def main():
     games["opp"] = games["opp"].astype(str).str.upper()
     games["round_bucket"] = games["round"].apply(round_bucket)
 
-    games_top50 = games.sort_values("true_choke_score", ascending=False).head(50).copy()
+    # New: "Round-unweighted" score (removes game importance / round weight only)
+    # If importance_weight is missing/0, default to True score.
+    iw = pd.to_numeric(games.get("importance_weight", 1.0), errors="coerce").fillna(1.0)
+    iw = iw.replace(0, 1.0)
+    games["round_unweighted_score"] = games["true_choke_score"] / iw
+
+    # top sets
+    games_top50_true = games.sort_values("true_choke_score", ascending=False).head(50).copy()
+    games_top50_unw = games.sort_values("round_unweighted_score", ascending=False).head(50).copy()
 
     # -----------------------
     # Normalize teams
@@ -161,8 +184,18 @@ def main():
         paper_bgcolor="#0b0f14",
         plot_bgcolor="#0b0f14",
     )
-    # More mobile-friendly plotly controls
-    config = {"responsive": True, "displaylogo": False, "scrollZoom": False}
+
+    # IMPORTANT: these reduce the "scroll gets hijacked" issue
+    config = {
+        "responsive": True,
+        "displaylogo": False,
+        "scrollZoom": False,    # disable wheel zoom
+        "doubleClick": "reset",
+        "modeBarButtonsToRemove": [
+            "zoom2d", "pan2d", "select2d", "lasso2d",
+            "zoomIn2d", "zoomOut2d", "autoScale2d", "resetScale2d"
+        ],
+    }
 
     ROUND_COLORS = {
         "Wild Card": "#60a5fa",
@@ -174,10 +207,32 @@ def main():
     CONF_COLORS = {"AFC": "#60a5fa", "NFC": "#34d399", "Unknown": "#9ca3af"}
 
     # -----------------------
-    # CHART 1: Top 25 chokes
+    # CHART 1: Top 15 biggest (True score) for MOBILE
+    # CHART 1B: Top 25 biggest (True score) for DESKTOP
     # -----------------------
-    top25 = games_top50.head(25).iloc[::-1].copy()
-    fig1 = px.bar(
+    top15 = games_top50_true.head(15).iloc[::-1].copy()
+    top25 = games_top50_true.head(25).iloc[::-1].copy()
+
+    fig1_mobile = px.bar(
+        top15,
+        x="true_choke_score",
+        y="label",
+        orientation="h",
+        color="round_bucket",
+        color_discrete_map=ROUND_COLORS,
+        template=template,
+    )
+    fig1_mobile.update_layout(
+        **base_layout,
+        height=650,
+        legend_title_text="Round",
+        title=dict(text="Top 15 Biggest Playoff Chokes (True Score)", x=0.02, xanchor="left"),
+    )
+    fig1_mobile.update_yaxes(title="", automargin=True)
+    fig1_mobile.update_xaxes(title="True Choke Score")
+    _lock_plotly_interactions(fig1_mobile)
+
+    fig1_desktop = px.bar(
         top25,
         x="true_choke_score",
         y="label",
@@ -186,14 +241,15 @@ def main():
         color_discrete_map=ROUND_COLORS,
         template=template,
     )
-    fig1.update_layout(
+    fig1_desktop.update_layout(
         **base_layout,
         height=920,
         legend_title_text="Round",
-        title=dict(text="Top 25 Biggest Playoff Chokes (True Choke Score)", x=0.02, xanchor="left"),
+        title=dict(text="Top 25 Biggest Playoff Chokes (True Score)", x=0.02, xanchor="left"),
     )
-    fig1.update_yaxes(title="", automargin=True)
-    fig1.update_xaxes(title="True Choke Score")
+    fig1_desktop.update_yaxes(title="", automargin=True)
+    fig1_desktop.update_xaxes(title="True Choke Score")
+    _lock_plotly_interactions(fig1_desktop)
 
     # -----------------------
     # CHART 2: Choke MOST
@@ -216,6 +272,7 @@ def main():
     )
     fig2.update_yaxes(title="", automargin=True)
     fig2.update_xaxes(title="Choke Rate (10+ leads blown per playoff loss)")
+    _lock_plotly_interactions(fig2)
 
     # -----------------------
     # CHART 3: Choke WORST
@@ -234,10 +291,11 @@ def main():
         **base_layout,
         height=520,
         legend_title_text="Conf",
-        title=dict(text="Teams That Choke WORST (Avg Severity per Loss)", x=0.02, xanchor="left"),
+        title=dict(text="Teams That Choke WORST (Avg Severity/Loss)", x=0.02, xanchor="left"),
     )
     fig3.update_yaxes(title="", automargin=True)
     fig3.update_xaxes(title="Avg True Choke Score per Loss")
+    _lock_plotly_interactions(fig3)
 
     # -----------------------
     # CHART 4: Scatter (logos in hover)
@@ -282,52 +340,86 @@ def main():
     )
     fig4.update_layout(
         **base_layout,
-        height=700,
+        height=650,
         showlegend=False,
-        title=dict(text="Choke Most vs Choke Worst (Top 24 by Total Choke) — Logos in Hover", x=0.02, xanchor="left"),
+        title=dict(text="Choke Most vs Choke Worst — (Top 24 Total Choke)", x=0.02, xanchor="left"),
     )
     fig4.update_xaxes(title="Choke Rate (Most)")
-    fig4.update_yaxes(title="Avg Choke Severity per Loss (Worst)")
+    fig4.update_yaxes(title="Avg Severity per Loss (Worst)")
+    _lock_plotly_interactions(fig4)
 
     # -----------------------
-    # Team Deep Dive dataset (all rows in your available CSV)
+    # DATA payloads for interactive dropdown section + team deep dive
     # -----------------------
+    # Deep Dive (all rows in your available dataset)
     deep_df = games.copy()
     for col in ["season", "week"]:
         if col not in deep_df.columns:
             deep_df[col] = np.nan
 
-    preferred_cols = ["season", "week", "round", "opp", "points_for", "points_against", "max_lead", "true_choke_score"]
+    preferred_cols = [
+        "season", "week", "round", "opp", "points_for", "points_against",
+        "max_lead", "true_choke_score", "round_unweighted_score"
+    ]
     cols = [c for c in preferred_cols if c in deep_df.columns]
 
     deep_df = deep_df[["team"] + cols].copy()
     deep_df["team"] = deep_df["team"].astype(str).str.upper()
-
     deep_df["season"] = pd.to_numeric(deep_df.get("season", np.nan), errors="coerce")
     deep_df["week"] = pd.to_numeric(deep_df.get("week", np.nan), errors="coerce")
     deep_df["true_choke_score"] = pd.to_numeric(deep_df.get("true_choke_score", 0.0), errors="coerce").fillna(0.0)
+    deep_df["round_unweighted_score"] = pd.to_numeric(deep_df.get("round_unweighted_score", 0.0), errors="coerce").fillna(0.0)
     deep_df["max_lead"] = pd.to_numeric(deep_df.get("max_lead", 0.0), errors="coerce").fillna(0.0)
 
     deep_df = deep_df.sort_values(["team", "true_choke_score"], ascending=[True, False]).copy()
 
     team_list = sorted([t for t in deep_df["team"].dropna().unique().tolist() if str(t).strip() != ""])
-    payload = {t: deep_df[deep_df["team"] == t].to_dict(orient="records") for t in team_list}
-    payload_json = json.dumps(payload)
+    team_payload = {t: deep_df[deep_df["team"] == t].to_dict(orient="records") for t in team_list}
+    team_payload_json = json.dumps(team_payload)
+
+    # Dropdown section payload:
+    # Provide two ranked lists (true vs round-unweighted) so JS can switch instantly.
+    def _pack_top(df: pd.DataFrame, metric_col: str, n: int = 25):
+        d = df.sort_values(metric_col, ascending=False).head(n).copy()
+        # ensure label exists
+        if "label" not in d.columns:
+            d["label"] = d.apply(build_label, axis=1)
+        out = []
+        for _, r in d.iterrows():
+            out.append({
+                "label": str(r.get("label", "")),
+                "team": str(r.get("team", "")),
+                "opp": str(r.get("opp", "")),
+                "round": str(r.get("round", "")),
+                "season": safe_int(r.get("season", "")),
+                "max_lead": float(r.get("max_lead", 0.0)),
+                "true_choke_score": float(r.get("true_choke_score", 0.0)),
+                "round_unweighted_score": float(r.get("round_unweighted_score", 0.0)),
+            })
+        return out
+
+    top_true_list = _pack_top(games, "true_choke_score", n=25)
+    top_unw_list = _pack_top(games, "round_unweighted_score", n=25)
+
+    rank_payload = {
+        "true": top_true_list,
+        "unweighted": top_unw_list
+    }
+    rank_payload_json = json.dumps(rank_payload)
 
     # -----------------------
     # KPIs + build stamp
     # -----------------------
-    top_team_total = teams.sort_values("total_choke", ascending=False).head(1)
-    top_team_name = top_team_total["team"].iloc[0] if len(top_team_total) else "N/A"
-    top_team_score = float(top_team_total["total_choke"].iloc[0]) if len(top_team_total) else 0.0
-
-    biggest_game = games_top50.iloc[0]["label"] if len(games_top50) else "N/A"
-    biggest_score = float(games_top50.iloc[0]["true_choke_score"]) if len(games_top50) else 0.0
-
     build_stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    biggest_true = games_top50_true.iloc[0]["label"] if len(games_top50_true) else "N/A"
+    biggest_true_score = float(games_top50_true.iloc[0]["true_choke_score"]) if len(games_top50_true) else 0.0
+
+    biggest_unw = games_top50_unw.iloc[0]["label"] if len(games_top50_unw) else "N/A"
+    biggest_unw_score = float(games_top50_unw.iloc[0]["round_unweighted_score"]) if len(games_top50_unw) else 0.0
+
     # -----------------------
-    # HTML (mobile-first deep dive)
+    # HTML (separate mobile/desktop layout)
     # -----------------------
     html = f"""
 <!DOCTYPE html>
@@ -397,10 +489,11 @@ def main():
       margin-bottom: 6px;
     }}
     .kpi .value {{
-      font-size: 16px;
+      font-size: 14px;
       font-weight: 800;
       line-height: 1.25;
     }}
+
     .grid2 {{
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -414,9 +507,10 @@ def main():
       margin: 12px 0;
       box-shadow: 0 10px 25px rgba(0,0,0,0.25);
     }}
-    /* Plotly containers should not overflow on mobile */
-    .card > div {{
-      width: 100% !important;
+
+    /* Make Plotly behave better with mobile scroll */
+    .js-plotly-plot, .plotly {{
+      touch-action: pan-y !important; /* allow vertical scrolling */
     }}
 
     .section-title {{
@@ -439,7 +533,7 @@ def main():
       padding: 10px 12px;
       font-size: 14px;
       outline: none;
-      width: min(360px, 100%);
+      width: min(420px, 100%);
     }}
     .pill {{
       padding: 8px 10px;
@@ -486,7 +580,7 @@ def main():
       background: rgba(17,24,39,0.55);
     }}
 
-    /* Mobile cards (best for phones) */
+    /* Mobile cards */
     .cards {{
       display: none;
       gap: 10px;
@@ -503,6 +597,7 @@ def main():
       gap: 10px;
       margin-bottom: 8px;
       font-weight: 800;
+      font-size: 13px;
     }}
     .score-chip {{
       padding: 6px 10px;
@@ -525,11 +620,9 @@ def main():
       font-weight: 700;
     }}
 
-    .footer {{
-      margin-top: 12px;
-      color: var(--muted);
-      font-size: 12px;
-    }}
+    /* MOBILE/DESKTOP versions */
+    .desktop-only {{ display: block; }}
+    .mobile-only {{ display: none; }}
 
     @media (max-width: 950px) {{
       .grid2 {{ grid-template-columns: 1fr; }}
@@ -538,53 +631,132 @@ def main():
       .card {{ padding: 8px; }}
     }}
 
-    /* Mobile mode: hide table, show cards */
     @media (max-width: 700px) {{
+      .desktop-only {{ display: none; }}
+      .mobile-only {{ display: block; }}
       .table-wrap {{ display: none; }}
       .cards {{ display: grid; }}
     }}
+
+    /* Mobile: keep charts compact */
+    .mobile-chart {{
+      margin-top: 10px;
+    }}
   </style>
 </head>
+
 <body>
   <div class="wrap">
     <h1>NFL Playoff True Choke Index (2000–2025)</h1>
     <p class="sub">
-      Phone-friendly sports analytics report. Team Deep Dive becomes swipeable game cards on mobile.
+      Clean, portfolio-ready sports analytics dashboard. Mobile uses a simplified layout to reduce clutter.
     </p>
-    <p class="hint">Build: <b>{build_stamp}</b> (if this changed, your site updated)</p>
+    <p class="hint">Build: <b>{build_stamp}</b> (if this timestamp changes, your live site updated)</p>
 
     <div class="kpis">
       <div class="kpi">
-        <div class="label">#1 Choke Game</div>
-        <div class="value" style="font-size:14px;font-weight:700">{biggest_game}<br><span style="color: var(--muted);">Score: {biggest_score:.2f}</span></div>
+        <div class="label">#1 True Choke Game</div>
+        <div class="value">{biggest_true}<br><span style="color:var(--muted);">Score: {biggest_true_score:.2f}</span></div>
       </div>
       <div class="kpi">
-        <div class="label">Top Franchise (Total Choke)</div>
-        <div class="value">{top_team_name}<br><span style="color: var(--muted);">Total: {top_team_score:.2f}</span></div>
+        <div class="label">#1 Round-Unweighted Choke</div>
+        <div class="value">{biggest_unw}<br><span style="color:var(--muted);">Score: {biggest_unw_score:.2f}</span></div>
       </div>
       <div class="kpi">
-        <div class="label">How to read</div>
-        <div class="value" style="font-size:13px;font-weight:700;color: var(--muted);">
-          Limited colors (Round/Conference) so charts stay readable.
+        <div class="label">Mobile UX</div>
+        <div class="value" style="color:var(--muted);font-weight:700;">
+          Charts are locked (no pan/zoom) so scrolling doesn’t break the page.
         </div>
       </div>
     </div>
 
-    <div class="card">{fig1.to_html(full_html=False, include_plotlyjs="cdn", config=config)}</div>
+    <!-- =========================
+         MOBILE VERSION (less clutter)
+         ========================= -->
+    <div class="mobile-only">
 
-    <div class="grid2">
-      <div class="card">{fig2.to_html(full_html=False, include_plotlyjs=False, config=config)}</div>
-      <div class="card">{fig3.to_html(full_html=False, include_plotlyjs=False, config=config)}</div>
+      <div class="card mobile-chart">
+        {fig1_mobile.to_html(full_html=False, include_plotlyjs="cdn", config=config)}
+      </div>
+
+      <div class="card mobile-chart">
+        {fig2.to_html(full_html=False, include_plotlyjs=False, config=config)}
+      </div>
+
+      <div class="card mobile-chart">
+        {fig3.to_html(full_html=False, include_plotlyjs=False, config=config)}
+      </div>
+
+      <div class="card mobile-chart">
+        {fig4.to_html(full_html=False, include_plotlyjs=False, config=config)}
+      </div>
+
     </div>
 
-    <div class="card">{fig4.to_html(full_html=False, include_plotlyjs=False, config=config)}</div>
+    <!-- =========================
+         DESKTOP VERSION (full layout)
+         ========================= -->
+    <div class="desktop-only">
+      <div class="card">
+        {fig1_desktop.to_html(full_html=False, include_plotlyjs="cdn", config=config)}
+      </div>
 
+      <div class="grid2">
+        <div class="card">{fig2.to_html(full_html=False, include_plotlyjs=False, config=config)}</div>
+        <div class="card">{fig3.to_html(full_html=False, include_plotlyjs=False, config=config)}</div>
+      </div>
+
+      <div class="card">{fig4.to_html(full_html=False, include_plotlyjs=False, config=config)}</div>
+    </div>
+
+    <!-- =========================
+         NEW SECTION: Round-unweighted ranking dropdown
+         ========================= -->
+    <div class="card">
+      <div class="section-title">Compare Rankings — With vs Without Playoff-Round Weight</div>
+      <div class="controls">
+        <select id="rankMode">
+          <option value="true">True Choke Score (includes round importance)</option>
+          <option value="unweighted">Round-Unweighted Score (ignores round importance)</option>
+        </select>
+        <div class="pill" id="rankHint">Showing: True Choke Score</div>
+      </div>
+
+      <div class="cards" id="rankCards"></div>
+
+      <div class="table-wrap" style="max-height: 520px;">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Game</th>
+              <th>True Score</th>
+              <th>Unweighted</th>
+              <th>Max Lead</th>
+            </tr>
+          </thead>
+          <tbody id="rankTableBody"></tbody>
+        </table>
+      </div>
+
+      <div class="hint" style="margin-top:10px;">
+        “Unweighted” keeps your choke math but removes the round multiplier — useful for comparing Falcons/Patriots SB vs other collapses on pure gameplay severity.
+      </div>
+    </div>
+
+    <!-- =========================
+         Team Deep Dive (desktop table + mobile cards)
+         ========================= -->
     <div class="card">
       <div class="section-title">Team Deep Dive — All Chokes</div>
       <div class="controls">
         <select id="teamSelect"></select>
+        <select id="teamMetric">
+          <option value="true_choke_score">Sort by True Choke Score</option>
+          <option value="round_unweighted_score">Sort by Round-Unweighted Score</option>
+        </select>
         <div class="pill" id="rowCount">0 games</div>
-        <div class="pill">Desktop: sortable table • Mobile: cards</div>
+        <div class="pill">Mobile: cards • Desktop: sortable table</div>
       </div>
 
       <!-- Desktop table -->
@@ -597,25 +769,83 @@ def main():
 
       <!-- Mobile cards -->
       <div class="cards" id="cards"></div>
-
-      <div class="footer">
-        Mobile improvement: table becomes game cards under 700px width.
-      </div>
     </div>
+
   </div>
 
 <script>
-  const DATA = {payload_json};
-  const teams = Object.keys(DATA).sort();
+  const TEAM_DATA = {team_payload_json};
+  const RANK_DATA = {rank_payload_json};
+
+  // ----------- Ranking section (new)
+  const rankMode = document.getElementById("rankMode");
+  const rankHint = document.getElementById("rankHint");
+  const rankTableBody = document.getElementById("rankTableBody");
+  const rankCards = document.getElementById("rankCards");
+
+  function fmt2(n) {{
+    const x = Number(n);
+    if (isNaN(x)) return "";
+    return x.toFixed(2);
+  }}
+
+  function renderRank(mode) {{
+    const rows = (RANK_DATA && RANK_DATA[mode]) ? RANK_DATA[mode] : [];
+    rankHint.textContent = (mode === "true") ? "Showing: True Choke Score" : "Showing: Round-Unweighted Score";
+
+    // desktop table
+    rankTableBody.innerHTML = "";
+    for (let i = 0; i < rows.length; i++) {{
+      const r = rows[i];
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        "<td>" + (i+1) + "</td>" +
+        "<td>" + (r.label || "") + "</td>" +
+        "<td>" + fmt2(r.true_choke_score) + "</td>" +
+        "<td>" + fmt2(r.round_unweighted_score) + "</td>" +
+        "<td>" + fmt2(r.max_lead) + "</td>";
+      rankTableBody.appendChild(tr);
+    }}
+
+    // mobile cards
+    rankCards.innerHTML = "";
+    for (let i = 0; i < rows.length; i++) {{
+      const r = rows[i];
+      const div = document.createElement("div");
+      div.className = "game-card";
+      const headline = (r.season || "") + " " + (r.round || "") + " — " + (r.team || "") + " vs " + (r.opp || "");
+      const chip = (mode === "true") ? ("True: " + fmt2(r.true_choke_score)) : ("Unw: " + fmt2(r.round_unweighted_score));
+      div.innerHTML =
+        "<div class='game-head'><div>" + (i+1) + ". " + headline + "</div><div class='score-chip'>" + chip + "</div></div>" +
+        "<div class='game-meta'>" +
+          "<div class='meta-item'><b>True</b><br>" + fmt2(r.true_choke_score) + "</div>" +
+          "<div class='meta-item'><b>Unweighted</b><br>" + fmt2(r.round_unweighted_score) + "</div>" +
+          "<div class='meta-item'><b>Max Lead</b><br>" + fmt2(r.max_lead) + "</div>" +
+        "</div>";
+      rankCards.appendChild(div);
+    }}
+  }}
+
+  rankMode.addEventListener("change", (e) => {{
+    renderRank(e.target.value);
+  }});
+
+  // initial rank render
+  renderRank("true");
+
+
+  // ----------- Team deep dive (improved)
+  const teams = Object.keys(TEAM_DATA).sort();
   const defaultTeam = teams.includes("GB") ? "GB" : (teams[0] || "");
 
-  const select = document.getElementById("teamSelect");
+  const teamSelect = document.getElementById("teamSelect");
+  const teamMetric = document.getElementById("teamMetric");
   const theadRow = document.getElementById("theadRow");
   const tbody = document.getElementById("tbody");
   const cards = document.getElementById("cards");
   const rowCount = document.getElementById("rowCount");
 
-  const preferredCols = ["season","week","round","opp","points_for","points_against","max_lead","true_choke_score"];
+  const preferredCols = ["season","week","round","opp","points_for","points_against","max_lead","true_choke_score","round_unweighted_score"];
 
   let currentTeam = defaultTeam;
   let sortKey = "true_choke_score";
@@ -623,11 +853,11 @@ def main():
 
   function fmt(val, key) {{
     if (val === null || val === undefined) return "";
-    if (key === "true_choke_score") {{
+    if (key === "true_choke_score" || key === "round_unweighted_score") {{
       const n = Number(val);
       return isNaN(n) ? val : n.toFixed(2);
     }}
-    if (key === "max_lead") {{
+    if (key === "max_lead" || key === "points_for" || key === "points_against" || key === "week") {{
       const n = Number(val);
       return isNaN(n) ? val : n.toFixed(0);
     }}
@@ -673,7 +903,7 @@ def main():
           sortDir = (sortDir === "asc") ? "desc" : "asc";
         }} else {{
           sortKey = col;
-          sortDir = (col === "true_choke_score") ? "desc" : "asc";
+          sortDir = (col.includes("score")) ? "desc" : "asc";
         }}
         renderTeam(currentTeam);
       }});
@@ -701,50 +931,55 @@ def main():
       const pf = fmt(r.points_for, "points_for");
       const pa = fmt(r.points_against, "points_against");
       const lead = fmt(r.max_lead, "max_lead");
-      const score = fmt(r.true_choke_score, "true_choke_score");
+      const tscore = fmt(r.true_choke_score, "true_choke_score");
+      const uscore = fmt(r.round_unweighted_score, "round_unweighted_score");
 
       const div = document.createElement("div");
       div.className = "game-card";
-      div.innerHTML = `
-        <div class="game-head">
-          <div>${season} ${rnd} vs ${opp}</div>
-          <div class="score-chip">Choke: ${score}</div>
-        </div>
-        <div class="game-meta">
-          <div class="meta-item"><b>Final</b><br>${pf}-${pa}</div>
-          <div class="meta-item"><b>Max Lead</b><br>${lead}</div>
-        </div>
-      `;
+      div.innerHTML =
+        "<div class='game-head'>" +
+          "<div>" + season + " " + rnd + " vs " + opp + "</div>" +
+          "<div class='score-chip'>True: " + tscore + "</div>" +
+        "</div>" +
+        "<div class='game-meta'>" +
+          "<div class='meta-item'><b>Final</b><br>" + pf + "-" + pa + "</div>" +
+          "<div class='meta-item'><b>Max Lead</b><br>" + lead + "</div>" +
+          "<div class='meta-item'><b>Unweighted</b><br>" + uscore + "</div>" +
+        "</div>";
       cards.appendChild(div);
     }});
   }}
 
   function renderTeam(team) {{
     currentTeam = team;
-    const rows = DATA[team] || [];
+    const rows = TEAM_DATA[team] || [];
     const cols = getCols(rows);
-    const sorted = sortRows(rows);
 
-    // Avoid template literal conflicts with Python f-strings by using concat in generator.
+    // tie sortKey to dropdown selection
+    sortKey = teamMetric.value;
+    sortDir = "desc";
+
+    const sorted = sortRows(rows);
     rowCount.textContent = sorted.length + " games";
 
     renderDesktopTable(sorted, cols);
     renderMobileCards(sorted);
   }}
 
-  // populate select
+  // populate team select
   teams.forEach(t => {{
     const opt = document.createElement("option");
     opt.value = t;
     opt.textContent = t;
-    select.appendChild(opt);
+    teamSelect.appendChild(opt);
   }});
-  select.value = defaultTeam;
+  teamSelect.value = defaultTeam;
 
-  select.addEventListener("change", (e) => {{
-    sortKey = "true_choke_score";
-    sortDir = "desc";
+  teamSelect.addEventListener("change", (e) => {{
     renderTeam(e.target.value);
+  }});
+  teamMetric.addEventListener("change", () => {{
+    renderTeam(currentTeam);
   }});
 
   renderTeam(defaultTeam);
