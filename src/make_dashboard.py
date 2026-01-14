@@ -224,7 +224,6 @@ def main():
 
     fig4.update_layout(
         **base_layout,
-        title="Team Deep Dive (Dropdown)",
         height=560,
         updatemenus=[dict(
             buttons=buttons,
