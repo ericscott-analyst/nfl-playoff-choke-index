@@ -12,9 +12,6 @@ os.makedirs(DOCS_DIR, exist_ok=True)
 TOP_GAMES_CSV = os.path.join(OUTPUTS_DIR, "top_50_choke_games.csv")
 TEAM_RANK_CSV = os.path.join(OUTPUTS_DIR, "team_choke_rankings.csv")
 
-# We will write the full dashboard to BOTH files:
-# - index.html (what Pages shows by default)
-# - dashboard.html (optional direct link)
 INDEX_HTML = os.path.join(DOCS_DIR, "index.html")
 DASHBOARD_HTML = os.path.join(DOCS_DIR, "dashboard.html")
 
@@ -26,34 +23,18 @@ def require_file(path: str):
         )
 
 
+def to_num(df, col, default=0.0):
+    if col not in df.columns:
+        df[col] = default
+    df[col] = pd.to_numeric(df[col], errors="coerce").fillna(default)
+    return df
+
+
 def safe_int(x):
     try:
         return int(x)
     except Exception:
         return x
-
-
-def try_load_team_logos():
-    """
-    Try to load team metadata (logos, conf, colors) from nflfastR-data.
-    This runs locally when generating the HTML (not on GitHub Pages).
-    """
-    url = "https://raw.githubusercontent.com/guga31bb/nflfastR-data/master/teams_colors_logos.csv"
-    try:
-        df = pd.read_csv(url)
-        # Standardize
-        keep = [
-            "team_abbr", "team_name", "team_conf",
-            "team_logo_espn", "team_logo_wikipedia",
-            "team_color", "team_color2"
-        ]
-        keep = [c for c in keep if c in df.columns]
-        df = df[keep].copy()
-        df.rename(columns={"team_abbr": "team"}, inplace=True)
-        df["team"] = df["team"].astype(str).str.upper()
-        return df
-    except Exception:
-        return None
 
 
 def build_label(row):
@@ -79,14 +60,38 @@ def round_bucket(x):
         return "Conference"
     if "super" in s or "sb" in s:
         return "Super Bowl"
-    return str(x)
+    return "Unknown"
 
 
-def clamp_series(s):
-    s = pd.to_numeric(s, errors="coerce").fillna(0)
-    if s.max() == s.min():
-        return s
-    return (s - s.min()) / (s.max() - s.min())
+def clamp01(series: pd.Series) -> pd.Series:
+    s = pd.to_numeric(series, errors="coerce").fillna(0.0)
+    mn, mx = float(s.min()), float(s.max())
+    if mx == mn:
+        return pd.Series([0.5] * len(s), index=s.index)
+    return (s - mn) / (mx - mn)
+
+
+def try_load_team_meta():
+    """
+    Best-effort team metadata (logos + conf). If it fails (no internet), we just skip logos.
+    """
+    url = "https://raw.githubusercontent.com/guga31bb/nflfastR-data/master/teams_colors_logos.csv"
+    try:
+        meta = pd.read_csv(url)
+        # Standardize team column name to "team"
+        if "team_abbr" in meta.columns:
+            meta = meta.rename(columns={"team_abbr": "team"})
+        meta["team"] = meta["team"].astype(str).str.upper()
+
+        # Prefer ESPN logo, fallback to wikipedia if needed
+        if "team_logo_espn" not in meta.columns and "team_logo_wikipedia" in meta.columns:
+            meta["team_logo_espn"] = meta["team_logo_wikipedia"]
+
+        keep = [c for c in ["team", "team_conf", "team_logo_espn"] if c in meta.columns]
+        meta = meta[keep].copy()
+        return meta
+    except Exception:
+        return None
 
 
 def main():
@@ -96,75 +101,67 @@ def main():
     games = pd.read_csv(TOP_GAMES_CSV)
     teams = pd.read_csv(TEAM_RANK_CSV)
 
-    # ---------- Normalize games ----------
+    # ---- Normalize games ----
+    # Ensure expected numeric cols exist
     for col in ["true_choke_score", "max_lead", "importance_weight", "late_weight", "points_for", "points_against"]:
-        if col in games.columns:
-            games[col] = pd.to_numeric(games[col], errors="coerce").fillna(0)
+        games = to_num(games, col, 0.0)
 
-    for col in ["season", "week"]:
-        if col in games.columns:
-            games[col] = pd.to_numeric(games[col], errors="coerce")
+    # Ensure expected string cols exist
+    for col in ["team", "opp", "round"]:
+        if col not in games.columns:
+            games[col] = ""
 
+    # Label + round bucket
     if "label" not in games.columns:
         games["label"] = games.apply(build_label, axis=1)
 
-    if "round" in games.columns:
-        games["round_bucket"] = games["round"].apply(round_bucket)
-    else:
-        games["round_bucket"] = "Unknown"
+    games["round_bucket"] = games["round"].apply(round_bucket)
+
+    games["team"] = games["team"].astype(str).str.upper()
+    games["opp"] = games["opp"].astype(str).str.upper()
 
     games = games.sort_values("true_choke_score", ascending=False).head(50).copy()
 
-    # ---------- Normalize teams ----------
-    # Some earlier versions use different column names
+    # ---- Normalize teams ----
+    # Handle alternate column names
     if "total_choke" not in teams.columns and "total_true_choke" in teams.columns:
         teams["total_choke"] = teams["total_true_choke"]
     if "avg_choke_per_loss" not in teams.columns and "avg_true_choke_per_loss" in teams.columns:
         teams["avg_choke_per_loss"] = teams["avg_true_choke_per_loss"]
 
-    for col in ["total_choke", "avg_choke_per_loss", "choke_rate", "playoff_losses", "playoff_games"]:
-        if col in teams.columns:
-            teams[col] = pd.to_numeric(teams[col], errors="coerce").fillna(0)
+    for col in ["team", "total_choke", "avg_choke_per_loss", "choke_rate", "playoff_losses", "playoff_games"]:
+        if col == "team":
+            if col not in teams.columns:
+                teams[col] = ""
+            teams[col] = teams[col].astype(str).str.upper()
+        else:
+            teams = to_num(teams, col, 0.0)
 
-    # ---------- Load logos/conf if possible ----------
-    meta = try_load_team_logos()
+    # ---- Team meta (logos + conference) ----
+    meta = try_load_team_meta()
     logo_map = {}
     conf_map = {}
 
     if meta is not None:
-        # Prefer ESPN logo if present, fallback to wikipedia
         if "team_logo_espn" in meta.columns:
-            logo_map.update(dict(zip(meta["team"], meta["team_logo_espn"])))
-        if "team_logo_wikipedia" in meta.columns:
-            # only fill missing
-            for t, u in dict(zip(meta["team"], meta["team_logo_wikipedia"])).items():
-                if t not in logo_map or pd.isna(logo_map[t]):
-                    logo_map[t] = u
+            logo_map = dict(zip(meta["team"], meta["team_logo_espn"]))
         if "team_conf" in meta.columns:
-            conf_map.update(dict(zip(meta["team"], meta["team_conf"])))
+            conf_map = dict(zip(meta["team"], meta["team_conf"]))
 
-    # If we can’t load meta, still works (logos just won’t show)
-    teams["team"] = teams["team"].astype(str).str.upper()
-    games["team"] = games["team"].astype(str).str.upper()
-    games["opp"] = games["opp"].astype(str).str.upper()
+    teams["team_conf"] = teams["team"].map(conf_map).fillna("Unknown")
+    teams["logo"] = teams["team"].map(logo_map).fillna("")
 
-    # Add conf to teams if missing
-    if "team_conf" not in teams.columns:
-        teams["team_conf"] = teams["team"].map(conf_map).fillna("Unknown")
-
-    # ---------- Theme + layout ----------
+    # ---- Styling ----
     template = "plotly_dark"
     base_layout = dict(
         template=template,
         font=dict(size=14),
-        margin=dict(l=26, r=26, t=64, b=26),
+        margin=dict(l=26, r=26, t=68, b=26),
         paper_bgcolor="#0b0f14",
         plot_bgcolor="#0b0f14",
-        title=dict(x=0.02, xanchor="left")
     )
     config = {"responsive": True, "displaylogo": False}
 
-    # Limited, meaningful colors (not rainbow-by-team)
     ROUND_COLORS = {
         "Wild Card": "#60a5fa",
         "Divisional": "#34d399",
@@ -174,7 +171,9 @@ def main():
     }
     CONF_COLORS = {"AFC": "#60a5fa", "NFC": "#34d399", "Unknown": "#9ca3af"}
 
-    # ---------- CHART 1: Top 25 biggest chokes (color by ROUND) ----------
+    # =========================
+    # CHART 1 — Top 25 games
+    # =========================
     top25 = games.head(25).iloc[::-1].copy()
     fig1 = px.bar(
         top25,
@@ -195,12 +194,13 @@ def main():
         },
         template=template
     )
-    fig1.update_layout(**base_layout, height=920, legend_title_text="Round")
+    fig1.update_layout(**base_layout, height=920, legend_title_text="Round", title=dict(x=0.02, xanchor="left"))
     fig1.update_yaxes(title="", automargin=True)
     fig1.update_xaxes(title="True Choke Score")
 
-    # ---------- CHART 2: Teams that choke MOST (frequency proxy) ----------
-    # We'll rank by choke_rate (your metric), show top 16 for readability
+    # =================================
+    # CHART 2 — Teams that choke MOST
+    # =================================
     most_df = teams.sort_values("choke_rate", ascending=False).head(16).copy()
     fig2 = px.bar(
         most_df.iloc[::-1],
@@ -219,11 +219,13 @@ def main():
         },
         template=template
     )
-    fig2.update_layout(**base_layout, height=520, legend_title_text="Conf")
+    fig2.update_layout(**base_layout, height=520, legend_title_text="Conf", title=dict(x=0.02, xanchor="left"))
     fig2.update_yaxes(title="", automargin=True)
     fig2.update_xaxes(title="Choke Rate (10+ leads blown per playoff loss)")
 
-    # ---------- CHART 3: Teams that choke WORST (severity proxy) ----------
+    # ==================================
+    # CHART 3 — Teams that choke WORST
+    # ==================================
     worst_df = teams.sort_values("avg_choke_per_loss", ascending=False).head(16).copy()
     fig3 = px.bar(
         worst_df.iloc[::-1],
@@ -241,21 +243,20 @@ def main():
         },
         template=template
     )
-    fig3.update_layout(**base_layout, height=520, legend_title_text="Conf")
+    fig3.update_layout(**base_layout, height=520, legend_title_text="Conf", title=dict(x=0.02, xanchor="left"))
     fig3.update_yaxes(title="", automargin=True)
     fig3.update_xaxes(title="Avg True Choke Score per Loss")
 
-    # ---------- CHART 4: Choke Most vs Choke Worst (logos in hover, sorted top-to-bottom section) ----------
-    # Keep it readable: top 24 by total choke
+    # ============================================
+    # CHART 4 — Choke Most vs Choke Worst (logos)
+    # ============================================
     scatter_df = teams.sort_values("total_choke", ascending=False).head(24).copy()
 
-    # Add logo url + nice hover
-    scatter_df["logo"] = scatter_df["team"].map(logo_map).fillna("")
-    scatter_df["team_conf"] = scatter_df["team_conf"].fillna("Unknown")
+    # Marker sizes based on total choke
+    scatter_df["msize"] = 14 + 28 * clamp01(scatter_df["total_choke"])
 
-    # Marker size based on total choke (scaled)
-    size = 14 + 26 * clamp_series(scatter_df["total_choke"])
-    scatter_df["msize"] = size
+    # We sort by total choke so it feels “most -> least” in the hover ordering
+    scatter_df = scatter_df.sort_values("total_choke", ascending=False).copy()
 
     fig4 = go.Figure()
     fig4.add_trace(go.Scatter(
@@ -268,13 +269,13 @@ def main():
             size=scatter_df["msize"],
             color=scatter_df["team_conf"].map(CONF_COLORS),
             line=dict(width=1, color="#0b0f14"),
-            opacity=0.9
+            opacity=0.92
         ),
         customdata=np.stack([
             scatter_df["logo"].astype(str),
-            scatter_df["total_choke"].round(2),
-            scatter_df["playoff_losses"].astype(int),
-            scatter_df["playoff_games"].astype(int)
+            scatter_df["total_choke"].round(2).astype(str),
+            scatter_df["playoff_losses"].round(0).astype(int).astype(str),
+            scatter_df["playoff_games"].round(0).astype(int).astype(str),
         ], axis=1),
         hovertemplate=(
             "<b>%{text}</b><br>"
@@ -283,124 +284,127 @@ def main():
             "Total Choke: %{customdata[1]}<br>"
             "Playoff losses: %{customdata[2]} / games: %{customdata[3]}<br>"
             "<br>"
-            "<img src='%{customdata[0]}' style='height:50px;'>"
+            "<img src='%{customdata[0]}' style='height:52px;'>"
             "<extra></extra>"
         )
     ))
     fig4.update_layout(
         **base_layout,
-        height=680,
+        height=700,
         title="Choke Most vs Choke Worst (Top 24 by Total Choke) — Logos in Hover",
+        showlegend=False
     )
     fig4.update_xaxes(title="Choke Rate (Most)")
     fig4.update_yaxes(title="Avg Choke Severity per Loss (Worst)")
 
-    # ---------- TEAM SECTION: dropdown + bar chart + top-3 table ----------
-    # Build top games per team from the Top 50 list (keeps it fast/clean)
+    # ============================================
+    # TEAM DEEP DIVE — Dropdown + clean chart/table
+    # ============================================
     top_by_team = games.sort_values("true_choke_score", ascending=False).copy()
-
     team_list = sorted([t for t in top_by_team["team"].dropna().unique().tolist() if str(t).strip() != ""])
     if not team_list:
         team_list = ["N/A"]
 
-    # For each team: top 8 bars + top 3 table rows
-    bar_traces = []
-    table_values = []
+    # Prepare per-team bar data + table rows
+    bar_data = {}
+    table_data = {}
     for t in team_list:
         sub = top_by_team[top_by_team["team"] == t].head(8).copy()
-        sub = sub.sort_values("true_choke_score", ascending=True)  # horizontal nicer
+        # nicer order for horizontal bars
+        sub = sub.sort_values("true_choke_score", ascending=True)
+        bar_data[t] = (sub["true_choke_score"].tolist(), sub["label"].tolist())
 
-        if sub.empty:
-            bar_traces.append(([], []))
-            table_values.append(["No games in Top 50 list."])
-            continue
-
-        bar_traces.append((sub["true_choke_score"].tolist(), sub["label"].tolist()))
         t3 = top_by_team[top_by_team["team"] == t].head(3).copy()
-        t3["row"] = t3["label"] + " | Score " + t3["true_choke_score"].round(2).astype(str)
-        table_values.append(t3["row"].tolist())
+        if t3.empty:
+            table_data[t] = ["No games for this team in the Top 50 list."]
+        else:
+            table_data[t] = (t3["label"] + " | Score " + t3["true_choke_score"].round(2).astype(str)).tolist()
 
-    # Create figure with two traces (bar + table) and switch via dropdown
+    # Bar chart
+    first_team = team_list[0]
+    x0, y0 = bar_data[first_team]
+
     fig5 = go.Figure()
-
-    # Initial
-    init_x, init_y = bar_traces[0]
     fig5.add_trace(go.Bar(
-        x=init_x,
-        y=init_y,
+        x=x0,
+        y=y0,
         orientation="h",
         marker=dict(color="#60a5fa"),
         hovertemplate="Score: %{x:.2f}<br>%{y}<extra></extra>",
         name="Top Chokes"
     ))
-
-    fig5.update_layout(**base_layout, height=520, title="Team Deep Dive — Top Chokes (from Top 50 list)")
+    fig5.update_layout(
+        **base_layout,
+        height=520,
+        title=f"Team Deep Dive — {first_team}: Top Chokes (Top 50 list)",
+    )
     fig5.update_xaxes(title="True Choke Score")
     fig5.update_yaxes(title="", automargin=True)
 
-    # Table figure separate (cleaner than mixing subplots)
-    fig6 = go.Figure()
-    fig6.add_trace(go.Table(
-        header=dict(
-            values=["Top 3 Chokes (quick summary)"],
-            fill_color="#0f1621",
-            font=dict(color="#e6edf3", size=14),
-            align="left"
-        ),
-        cells=dict(
-            values=[table_values[0] if table_values else ["No data"]],
-            fill_color="#0b0f14",
-            font=dict(color="#e6edf3", size=13),
-            align="left",
-            height=28
-        )
-    ))
-    fig6.update_layout(**base_layout, height=360, title="Team Deep Dive — Top 3 (Dropdown)")
-
-    # Dropdown menus to update both figs (we’ll render both and keep menus consistent)
-    # For fig5 (bar)
     bar_buttons = []
-    for i, t in enumerate(team_list):
-        xvals, yvals = bar_traces[i]
+    for t in team_list:
+        xs, ys = bar_data[t]
         bar_buttons.append(dict(
             label=t,
             method="update",
             args=[
-                {"x": [xvals], "y": [yvals]},
-                {"title": f"Team Deep Dive — {t}: Top Chokes (from Top 50 list)"}
+                {"x": [xs], "y": [ys]},
+                {"title": {"text": f"Team Deep Dive — {t}: Top Chokes (Top 50 list)", "x": 0.02, "xanchor": "left"}}
             ]
         ))
     fig5.update_layout(
         updatemenus=[dict(
             buttons=bar_buttons,
             direction="down",
-            x=0.02, y=1.15,
+            x=0.02, y=1.17,
             xanchor="left", yanchor="top",
             bgcolor="#0f1621",
             bordercolor="#1f2a37"
         )]
     )
 
-    # For fig6 (table)
+    # Table chart
+    fig6 = go.Figure()
+    fig6.add_trace(go.Table(
+        header=dict(
+            values=["Team Deep Dive — Top 3 Chokes (Summary)"],
+            fill_color="#0f1621",
+            font=dict(color="#e6edf3", size=14),
+            align="left"
+        ),
+        cells=dict(
+            values=[table_data[first_team]],
+            fill_color="#0b0f14",
+            font=dict(color="#e6edf3", size=13),
+            align="left",
+            height=28
+        )
+    ))
+    fig6.update_layout(
+        **base_layout,
+        height=360,
+        title=f"Team Deep Dive — {first_team}: Top 3 (Top 50 list)",
+    )
+
     table_buttons = []
-    for i, t in enumerate(team_list):
+    for t in team_list:
         table_buttons.append(dict(
             label=t,
             method="restyle",
-            args=[{"cells.values": [[table_values[i]]]}]
+            args=[{"cells.values": [[table_data[t]]]}]
         ))
     fig6.update_layout(
         updatemenus=[dict(
             buttons=table_buttons,
             direction="down",
-            x=0.02, y=1.15,
+            x=0.02, y=1.17,
             xanchor="left", yanchor="top",
             bgcolor="#0f1621",
             bordercolor="#1f2a37"
         )]
     )
 
-    # ---------- KPI cards ----------
+    # ---- KPI cards ----
     top_team_total = teams.sort_values("total_choke", ascending=False).head(1)
     top_team_name = top_team_total["team"].iloc[0] if len(top_team_total) else "N/A"
     top_team_score = float(top_team_total["total_choke"].iloc[0]) if len(top_team_total) else 0.0
@@ -408,8 +412,7 @@ def main():
     biggest_game = games.iloc[0]["label"] if len(games) else "N/A"
     biggest_score = float(games.iloc[0]["true_choke_score"]) if len(games) else 0.0
 
-    # ---------- HTML (modern tech report) ----------
-    # IMPORTANT: index.html is the dashboard itself (no extra click)
+    # ---- Modern HTML: index.html IS the dashboard (no extra click) ----
     html = f"""
 <!DOCTYPE html>
 <html>
@@ -418,7 +421,6 @@ def main():
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>NFL Playoff True Choke Index</title>
 
-  <!-- Modern tech font -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
@@ -440,7 +442,7 @@ def main():
       padding: 0;
     }}
     .wrap {{
-      max-width: 1100px;
+      max-width: 1120px;
       margin: 0 auto;
       padding: 22px 16px 48px 16px;
     }}
@@ -459,6 +461,11 @@ def main():
       color: var(--muted);
       font-size: 14px;
       line-height: 1.5;
+      margin: 0;
+    }}
+    .hint {{
+      color: var(--muted);
+      font-size: 12px;
       margin: 0;
     }}
     .kpis {{
@@ -482,7 +489,7 @@ def main():
     .kpi .value {{
       font-size: 18px;
       font-weight: 800;
-      line-height: 1.2;
+      line-height: 1.25;
     }}
     .grid2 {{
       display: grid;
@@ -496,11 +503,6 @@ def main():
       padding: 12px;
       margin: 12px 0;
       box-shadow: 0 10px 25px rgba(0,0,0,0.25);
-    }}
-    .hint {{
-      color: var(--muted);
-      font-size: 12px;
-      margin: 0;
     }}
     .footer {{
       margin-top: 10px;
@@ -518,10 +520,11 @@ def main():
     <div class="hero">
       <h1>NFL Playoff True Choke Index (2000–2025)</h1>
       <p class="sub">
-        Portfolio-ready sports analytics report built from play-by-play data. This model blends <b>game importance</b>,
-        <b>late-game collapse weighting</b>, and <b>special teams disasters</b> into a single True Choke Score.
+        Portfolio-ready sports analytics report built from play-by-play data.
+        Clean color choices: <b>Round</b> for games and <b>Conference</b> for team charts to avoid rainbow confusion.
+        Team logos appear in the scatter hover cards.
       </p>
-      <p class="hint">Tip: Hover for details • Zoom/Pan charts • Logos appear in the scatter hover cards</p>
+      <p class="hint">Tip: Hover for details • Zoom/Pan charts • Use dropdowns in Team Deep Dive</p>
     </div>
 
     <div class="kpis">
@@ -534,10 +537,11 @@ def main():
         <div class="value">{top_team_name}<br><span class="hint">Total: {top_team_score:.2f}</span></div>
       </div>
       <div class="kpi">
-        <div class="label">Design Choices</div>
+        <div class="label">What to look for</div>
         <div class="value" style="font-size:14px;font-weight:700">
-          Color by <span style="color:#fbbf24">Round</span> and <span style="color:#34d399">Conference</span><br>
-          <span class="hint">Avoids “rainbow chart” confusion</span>
+          Right side & up = <span style="color:#fbbf24">worst</span><br>
+          High x = <span style="color:#34d399">most frequent</span><br>
+          <span class="hint">Scatter bubbles scale by total choke</span>
         </div>
       </div>
     </div>
@@ -557,14 +561,14 @@ def main():
     </div>
 
     <div class="footer">
-      Generated via <b>make_dashboard.py</b>. Designed as a clean “tech dashboard” portfolio artifact.
+      Generated by <b>make_dashboard.py</b>. (If logos don’t show, your machine likely generated without internet access — charts still work.)
     </div>
   </div>
 </body>
 </html>
 """
 
-    # Write dashboard to both
+    # Write the full dashboard to BOTH files so Pages loads it immediately at /
     with open(INDEX_HTML, "w", encoding="utf-8") as f:
         f.write(html)
     with open(DASHBOARD_HTML, "w", encoding="utf-8") as f:
