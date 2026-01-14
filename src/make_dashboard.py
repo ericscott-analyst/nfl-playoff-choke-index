@@ -96,10 +96,6 @@ def try_load_team_meta():
 
 
 def _lock_plotly_interactions(fig: go.Figure) -> go.Figure:
-    """
-    Make charts scroll-friendly on mobile by disabling drag interactions and zoom/pan ranges.
-    This reduces the "chart steals scrolling" issue.
-    """
     fig.update_layout(dragmode=False)
     try:
         fig.update_xaxes(fixedrange=True)
@@ -107,6 +103,14 @@ def _lock_plotly_interactions(fig: go.Figure) -> go.Figure:
     except Exception:
         pass
     return fig
+
+
+def layout_no_margin(layout_dict: dict) -> dict:
+    """Return a copy of a layout dict without 'margin' to avoid duplicate kwargs."""
+    d = dict(layout_dict)
+    if "margin" in d:
+        d.pop("margin")
+    return d
 
 
 def main():
@@ -139,7 +143,6 @@ def main():
     games["round_unweighted_score"] = games["true_choke_score"] / iw
 
     games_top50_true = games.sort_values("true_choke_score", ascending=False).head(50).copy()
-    games_top50_unw = games.sort_values("round_unweighted_score", ascending=False).head(50).copy()
 
     # -----------------------
     # Normalize teams
@@ -182,8 +185,8 @@ def main():
         paper_bgcolor="#0b0f14",
         plot_bgcolor="#0b0f14",
     )
+    base_layout_nomargin = layout_no_margin(base_layout)
 
-    # Mobile-friendly interactions: no zoom/pan, no scroll hijack
     config = {
         "responsive": True,
         "displaylogo": False,
@@ -206,12 +209,10 @@ def main():
 
     # -----------------------
     # CHART 1: Top chokes
-    # Desktop: Top 25 horizontal (detailed labels)
-    # Mobile: Top 15 vertical by rank (clean, no squeezed labels)
+    # Desktop: Top 25 horizontal
+    # Mobile: Top 15 vertical rank
     # -----------------------
-    top25 = games_top50_true.head(25).copy()
-    top25 = top25.sort_values("true_choke_score", ascending=True).copy()
-
+    top25 = games_top50_true.head(25).copy().sort_values("true_choke_score", ascending=True)
     fig1_desktop = px.bar(
         top25,
         x="true_choke_score",
@@ -231,8 +232,7 @@ def main():
     fig1_desktop.update_xaxes(title="True Choke Score")
     _lock_plotly_interactions(fig1_desktop)
 
-    top15 = games_top50_true.head(15).copy()
-    top15 = top15.sort_values("true_choke_score", ascending=False).reset_index(drop=True)
+    top15 = games_top50_true.head(15).copy().sort_values("true_choke_score", ascending=False).reset_index(drop=True)
     top15["rank"] = top15.index + 1
     top15["rank_label"] = top15["rank"].astype(str)
 
@@ -246,7 +246,7 @@ def main():
         hover_data={"label": True, "rank_label": False},
     )
     fig1_mobile.update_layout(
-        **base_layout,
+        **base_layout_nomargin,
         height=420,
         legend_title_text="Round",
         title=dict(text="Top 15 Biggest Playoff Chokes (True Score)", x=0.02, xanchor="left"),
@@ -257,10 +257,9 @@ def main():
     _lock_plotly_interactions(fig1_mobile)
 
     # -----------------------
-    # CHART 2: Choke MOST (mobile tweaks)
+    # CHART 2: Choke MOST
     # -----------------------
     most_df = teams.sort_values("choke_rate", ascending=False).head(16).copy()
-
     fig2 = px.bar(
         most_df.iloc[::-1],
         x="choke_rate",
@@ -280,16 +279,14 @@ def main():
     fig2.update_xaxes(title="Choke Rate (10+ leads blown per playoff loss)")
     _lock_plotly_interactions(fig2)
 
-    fig2_mobile = fig2.to_dict()
-    fig2_mobile = go.Figure(fig2_mobile)
-    fig2_mobile.update_layout(height=420, margin=dict(l=10, r=10, t=72, b=18))
+    fig2_mobile = go.Figure(fig2.to_dict())
+    fig2_mobile.update_layout(**base_layout_nomargin, height=420, margin=dict(l=10, r=10, t=72, b=18))
     _lock_plotly_interactions(fig2_mobile)
 
     # -----------------------
-    # CHART 3: Choke WORST (mobile tweaks)
+    # CHART 3: Choke WORST
     # -----------------------
     worst_df = teams.sort_values("avg_choke_per_loss", ascending=False).head(16).copy()
-
     fig3 = px.bar(
         worst_df.iloc[::-1],
         x="avg_choke_per_loss",
@@ -309,15 +306,12 @@ def main():
     fig3.update_xaxes(title="Avg True Choke Score per Loss")
     _lock_plotly_interactions(fig3)
 
-    fig3_mobile = fig3.to_dict()
-    fig3_mobile = go.Figure(fig3_mobile)
-    fig3_mobile.update_layout(height=420, margin=dict(l=10, r=10, t=72, b=18))
+    fig3_mobile = go.Figure(fig3.to_dict())
+    fig3_mobile.update_layout(**base_layout_nomargin, height=420, margin=dict(l=10, r=10, t=72, b=18))
     _lock_plotly_interactions(fig3_mobile)
 
     # -----------------------
     # CHART 4: Scatter
-    # Desktop: markers + text
-    # Mobile: markers only (no cramped labels)
     # -----------------------
     scatter_df = teams.sort_values("total_choke", ascending=False).head(24).copy()
     scatter_df["msize"] = 14 + 28 * clamp01(scatter_df["total_choke"])
@@ -401,7 +395,7 @@ def main():
         )
     )
     fig4_mobile.update_layout(
-        **base_layout,
+        **base_layout_nomargin,
         height=460,
         showlegend=False,
         title=dict(text="Choke Most vs Choke Worst (Mobile View)", x=0.02, xanchor="left"),
@@ -412,7 +406,7 @@ def main():
     _lock_plotly_interactions(fig4_mobile)
 
     # -----------------------
-    # Payloads for dropdown section + team deep dive
+    # Payloads for dropdown + deep dive
     # -----------------------
     deep_df = games.copy()
     for col in ["season", "week"]:
@@ -460,15 +454,10 @@ def main():
 
     top_true_list = _pack_top(games, "true_choke_score", n=25)
     top_unw_list = _pack_top(games, "round_unweighted_score", n=25)
-
-    rank_payload = {"true": top_true_list, "unweighted": top_unw_list}
-    rank_payload_json = json.dumps(rank_payload)
+    rank_payload_json = json.dumps({"true": top_true_list, "unweighted": top_unw_list})
 
     # -----------------------
     # KPI cards requested
-    # 1) biggest choke game (true score)
-    # 2) team highest overall total_choke
-    # 3) team lowest overall total_choke
     # -----------------------
     build_stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -584,7 +573,6 @@ def main():
       box-shadow: 0 10px 25px rgba(0,0,0,0.25);
     }}
 
-    /* Plotly scroll behavior on touch */
     .js-plotly-plot, .plotly {{
       touch-action: pan-y !important;
     }}
@@ -620,7 +608,6 @@ def main():
       color: var(--muted);
     }}
 
-    /* Desktop table */
     .table-wrap {{
       border: 1px solid var(--border);
       border-radius: 14px;
@@ -656,7 +643,6 @@ def main():
       background: rgba(17,24,39,0.55);
     }}
 
-    /* Mobile cards */
     .cards {{
       display: none;
       gap: 10px;
@@ -696,7 +682,6 @@ def main():
       font-weight: 700;
     }}
 
-    /* MOBILE/DESKTOP versions */
     .desktop-only {{ display: block; }}
     .mobile-only {{ display: none; }}
 
@@ -734,7 +719,7 @@ def main():
       • Use the dropdown section to compare <b>with vs without round weighting</b>.
     </div>
 
-    <p class="hint">Build: <b>{build_stamp}</b> (if this timestamp changes, your live site updated)</p>
+    <p class="hint">Build: <b>{build_stamp}</b></p>
 
     <div class="kpis">
       <div class="kpi">
@@ -751,46 +736,32 @@ def main():
       </div>
     </div>
 
-    <!-- =========================
-         MOBILE VERSION (cleaner charts)
-         ========================= -->
     <div class="mobile-only">
       <div class="card">
         {fig1_mobile.to_html(full_html=False, include_plotlyjs="cdn", config=config)}
       </div>
-
       <div class="card">
         {fig2_mobile.to_html(full_html=False, include_plotlyjs=False, config=config)}
       </div>
-
       <div class="card">
         {fig3_mobile.to_html(full_html=False, include_plotlyjs=False, config=config)}
       </div>
-
       <div class="card">
         {fig4_mobile.to_html(full_html=False, include_plotlyjs=False, config=config)}
       </div>
     </div>
 
-    <!-- =========================
-         DESKTOP VERSION (full layout)
-         ========================= -->
     <div class="desktop-only">
       <div class="card">
         {fig1_desktop.to_html(full_html=False, include_plotlyjs="cdn", config=config)}
       </div>
-
       <div class="grid2">
         <div class="card">{fig2.to_html(full_html=False, include_plotlyjs=False, config=config)}</div>
         <div class="card">{fig3.to_html(full_html=False, include_plotlyjs=False, config=config)}</div>
       </div>
-
       <div class="card">{fig4.to_html(full_html=False, include_plotlyjs=False, config=config)}</div>
     </div>
 
-    <!-- =========================
-         Dropdown ranking compare
-         ========================= -->
     <div class="card">
       <div class="section-title">Compare Rankings — With vs Without Playoff-Round Weight</div>
       <div class="controls">
@@ -823,9 +794,6 @@ def main():
       </div>
     </div>
 
-    <!-- =========================
-         Team Deep Dive
-         ========================= -->
     <div class="card">
       <div class="section-title">Team Deep Dive — All Chokes</div>
       <div class="controls">
@@ -854,7 +822,6 @@ def main():
   const TEAM_DATA = {team_payload_json};
   const RANK_DATA = {rank_payload_json};
 
-  // ----------- Ranking section
   const rankMode = document.getElementById("rankMode");
   const rankHint = document.getElementById("rankHint");
   const rankTableBody = document.getElementById("rankTableBody");
@@ -906,8 +873,6 @@ def main():
   }});
   renderRank("true");
 
-
-  // ----------- Team deep dive
   const teams = Object.keys(TEAM_DATA).sort();
   const defaultTeam = teams.includes("GB") ? "GB" : (teams[0] || "");
 
