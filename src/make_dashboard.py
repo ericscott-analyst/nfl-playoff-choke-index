@@ -23,7 +23,7 @@ def require_file(path: str):
     if not os.path.exists(path):
         raise FileNotFoundError(
             f"Missing file: {path}\n"
-            f"Make sure your outputs/*.csv exist (run build_choke_index.py first)."
+            f"Make sure outputs/*.csv exist (run build_choke_index.py first)."
         )
 
 
@@ -86,7 +86,6 @@ def try_load_team_meta():
             meta = meta.rename(columns={"team_abbr": "team"})
         meta["team"] = meta["team"].astype(str).str.upper()
 
-        # Prefer ESPN logo; if missing, fallback
         if "team_logo_espn" not in meta.columns and "team_logo_wikipedia" in meta.columns:
             meta["team_logo_espn"] = meta["team_logo_wikipedia"]
 
@@ -120,7 +119,6 @@ def main():
     games["opp"] = games["opp"].astype(str).str.upper()
     games["round_bucket"] = games["round"].apply(round_bucket)
 
-    # Top 50 for headline charts
     games_top50 = games.sort_values("true_choke_score", ascending=False).head(50).copy()
 
     # -----------------------
@@ -153,17 +151,18 @@ def main():
     teams["logo"] = teams["team"].map(logo_map).fillna("")
 
     # -----------------------
-    # Styling
+    # Styling + Plotly config
     # -----------------------
     template = "plotly_dark"
     base_layout = dict(
         template=template,
         font=dict(size=14),
-        margin=dict(l=26, r=26, t=72, b=26),
+        margin=dict(l=18, r=18, t=72, b=18),
         paper_bgcolor="#0b0f14",
         plot_bgcolor="#0b0f14",
     )
-    config = {"responsive": True, "displaylogo": False}
+    # More mobile-friendly plotly controls
+    config = {"responsive": True, "displaylogo": False, "scrollZoom": False}
 
     ROUND_COLORS = {
         "Wild Card": "#60a5fa",
@@ -185,15 +184,6 @@ def main():
         orientation="h",
         color="round_bucket",
         color_discrete_map=ROUND_COLORS,
-        hover_data={
-            "team": True,
-            "opp": True,
-            "round_bucket": True,
-            "true_choke_score": ":.2f",
-            "max_lead": True,
-            "importance_weight": ":.2f",
-            "late_weight": ":.2f",
-        },
         template=template,
     )
     fig1.update_layout(
@@ -216,13 +206,6 @@ def main():
         orientation="h",
         color="team_conf",
         color_discrete_map=CONF_COLORS,
-        hover_data={
-            "choke_rate": ":.2f",
-            "playoff_losses": True,
-            "playoff_games": True,
-            "total_choke": ":.2f",
-            "avg_choke_per_loss": ":.2f",
-        },
         template=template,
     )
     fig2.update_layout(
@@ -245,12 +228,6 @@ def main():
         orientation="h",
         color="team_conf",
         color_discrete_map=CONF_COLORS,
-        hover_data={
-            "avg_choke_per_loss": ":.2f",
-            "playoff_losses": True,
-            "total_choke": ":.2f",
-            "choke_rate": ":.2f",
-        },
         template=template,
     )
     fig3.update_layout(
@@ -313,27 +290,24 @@ def main():
     fig4.update_yaxes(title="Avg Choke Severity per Loss (Worst)")
 
     # -----------------------
-    # TEAM DEEP DIVE table data (ALL rows in your available games CSV)
+    # Team Deep Dive dataset (all rows in your available CSV)
     # -----------------------
     deep_df = games.copy()
-
     for col in ["season", "week"]:
         if col not in deep_df.columns:
             deep_df[col] = np.nan
 
-    # pick columns that are likely present
     preferred_cols = ["season", "week", "round", "opp", "points_for", "points_against", "max_lead", "true_choke_score"]
     cols = [c for c in preferred_cols if c in deep_df.columns]
 
     deep_df = deep_df[["team"] + cols].copy()
     deep_df["team"] = deep_df["team"].astype(str).str.upper()
-    deep_df["season"] = pd.to_numeric(deep_df["season"], errors="coerce")
-    deep_df["week"] = pd.to_numeric(deep_df["week"], errors="coerce")
 
+    deep_df["season"] = pd.to_numeric(deep_df.get("season", np.nan), errors="coerce")
+    deep_df["week"] = pd.to_numeric(deep_df.get("week", np.nan), errors="coerce")
     deep_df["true_choke_score"] = pd.to_numeric(deep_df.get("true_choke_score", 0.0), errors="coerce").fillna(0.0)
     deep_df["max_lead"] = pd.to_numeric(deep_df.get("max_lead", 0.0), errors="coerce").fillna(0.0)
 
-    # Sort default: most severe first per team
     deep_df = deep_df.sort_values(["team", "true_choke_score"], ascending=[True, False]).copy()
 
     team_list = sorted([t for t in deep_df["team"].dropna().unique().tolist() if str(t).strip() != ""])
@@ -341,7 +315,7 @@ def main():
     payload_json = json.dumps(payload)
 
     # -----------------------
-    # KPIs
+    # KPIs + build stamp
     # -----------------------
     top_team_total = teams.sort_values("total_choke", ascending=False).head(1)
     top_team_name = top_team_total["team"].iloc[0] if len(top_team_total) else "N/A"
@@ -353,7 +327,7 @@ def main():
     build_stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     # -----------------------
-    # HTML (mobile-friendly)
+    # HTML (mobile-first deep dive)
     # -----------------------
     html = f"""
 <!DOCTYPE html>
@@ -375,6 +349,7 @@ def main():
       --text: #e6edf3;
       --muted: #9fb0c0;
       --chip: #111827;
+      --accent: #7aa2ff;
     }}
     body {{
       background: var(--bg);
@@ -385,11 +360,11 @@ def main():
     .wrap {{
       max-width: 1120px;
       margin: 0 auto;
-      padding: 22px 16px 56px 16px;
+      padding: 18px 14px 56px 14px;
     }}
     h1 {{
       margin: 0;
-      font-size: 30px;
+      font-size: 28px;
       letter-spacing: -0.3px;
     }}
     .sub {{
@@ -413,7 +388,7 @@ def main():
       background: var(--card);
       border: 1px solid var(--border);
       border-radius: 16px;
-      padding: 12px 12px;
+      padding: 12px;
       box-shadow: 0 10px 25px rgba(0,0,0,0.25);
     }}
     .kpi .label {{
@@ -422,7 +397,7 @@ def main():
       margin-bottom: 6px;
     }}
     .kpi .value {{
-      font-size: 18px;
+      font-size: 16px;
       font-weight: 800;
       line-height: 1.25;
     }}
@@ -435,14 +410,19 @@ def main():
       background: var(--card);
       border: 1px solid var(--border);
       border-radius: 18px;
-      padding: 12px;
+      padding: 10px;
       margin: 12px 0;
       box-shadow: 0 10px 25px rgba(0,0,0,0.25);
     }}
+    /* Plotly containers should not overflow on mobile */
+    .card > div {{
+      width: 100% !important;
+    }}
+
     .section-title {{
       font-weight: 800;
       font-size: 16px;
-      margin: 0 0 8px 0;
+      margin: 0 0 10px 0;
     }}
     .controls {{
       display: flex;
@@ -469,6 +449,8 @@ def main():
       font-size: 12px;
       color: var(--muted);
     }}
+
+    /* Desktop table */
     .table-wrap {{
       border: 1px solid var(--border);
       border-radius: 14px;
@@ -478,7 +460,7 @@ def main():
     table {{
       width: 100%;
       border-collapse: collapse;
-      min-width: 720px; /* horizontal scroll on mobile */
+      min-width: 720px;
     }}
     thead th {{
       position: sticky;
@@ -503,18 +485,63 @@ def main():
     tbody tr:hover td {{
       background: rgba(17,24,39,0.55);
     }}
-    .muted {{
-      color: var(--muted);
+
+    /* Mobile cards (best for phones) */
+    .cards {{
+      display: none;
+      gap: 10px;
     }}
+    .game-card {{
+      background: #0c111a;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 12px;
+    }}
+    .game-head {{
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+      font-weight: 800;
+    }}
+    .score-chip {{
+      padding: 6px 10px;
+      background: rgba(122,162,255,0.15);
+      border: 1px solid rgba(122,162,255,0.35);
+      border-radius: 999px;
+      font-size: 12px;
+      white-space: nowrap;
+    }}
+    .game-meta {{
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }}
+    .meta-item b {{
+      color: var(--text);
+      font-weight: 700;
+    }}
+
     .footer {{
       margin-top: 12px;
       color: var(--muted);
       font-size: 12px;
     }}
+
     @media (max-width: 950px) {{
       .grid2 {{ grid-template-columns: 1fr; }}
       .kpis {{ grid-template-columns: 1fr; }}
-      h1 {{ font-size: 26px; }}
+      h1 {{ font-size: 24px; }}
+      .card {{ padding: 8px; }}
+    }}
+
+    /* Mobile mode: hide table, show cards */
+    @media (max-width: 700px) {{
+      .table-wrap {{ display: none; }}
+      .cards {{ display: grid; }}
     }}
   </style>
 </head>
@@ -522,22 +549,24 @@ def main():
   <div class="wrap">
     <h1>NFL Playoff True Choke Index (2000–2025)</h1>
     <p class="sub">
-      Mobile-friendly sports analytics report. Team Deep Dive shows every available choke game and its score.
+      Phone-friendly sports analytics report. Team Deep Dive becomes swipeable game cards on mobile.
     </p>
-    <p class="hint">Tip: Tap/click column headers to sort • Scroll sideways on mobile for all columns</p>
+    <p class="hint">Build: <b>{build_stamp}</b> (if this changed, your site updated)</p>
 
     <div class="kpis">
       <div class="kpi">
         <div class="label">#1 Choke Game</div>
-        <div class="value" style="font-size:14px;font-weight:700">{biggest_game}<br><span class="muted">Score: {biggest_score:.2f}</span></div>
+        <div class="value" style="font-size:14px;font-weight:700">{biggest_game}<br><span style="color: var(--muted);">Score: {biggest_score:.2f}</span></div>
       </div>
       <div class="kpi">
         <div class="label">Top Franchise (Total Choke)</div>
-        <div class="value">{top_team_name}<br><span class="muted">Total: {top_team_score:.2f}</span></div>
+        <div class="value">{top_team_name}<br><span style="color: var(--muted);">Total: {top_team_score:.2f}</span></div>
       </div>
       <div class="kpi">
-        <div class="label">Build</div>
-        <div class="value" style="font-size:14px;font-weight:700">{build_stamp}<br><span class="muted">If this timestamp changed, your site updated.</span></div>
+        <div class="label">How to read</div>
+        <div class="value" style="font-size:13px;font-weight:700;color: var(--muted);">
+          Limited colors (Round/Conference) so charts stay readable.
+        </div>
       </div>
     </div>
 
@@ -551,13 +580,14 @@ def main():
     <div class="card">{fig4.to_html(full_html=False, include_plotlyjs=False, config=config)}</div>
 
     <div class="card">
-      <div class="section-title">Team Deep Dive — All Chokes + Scores</div>
+      <div class="section-title">Team Deep Dive — All Chokes</div>
       <div class="controls">
         <select id="teamSelect"></select>
         <div class="pill" id="rowCount">0 games</div>
-        <div class="pill">Click headers to sort</div>
+        <div class="pill">Desktop: sortable table • Mobile: cards</div>
       </div>
 
+      <!-- Desktop table -->
       <div class="table-wrap">
         <table id="teamTable">
           <thead><tr id="theadRow"></tr></thead>
@@ -565,8 +595,11 @@ def main():
         </table>
       </div>
 
+      <!-- Mobile cards -->
+      <div class="cards" id="cards"></div>
+
       <div class="footer">
-        Note: This table uses the data available in outputs/*.csv.
+        Mobile improvement: table becomes game cards under 700px width.
       </div>
     </div>
   </div>
@@ -579,6 +612,7 @@ def main():
   const select = document.getElementById("teamSelect");
   const theadRow = document.getElementById("theadRow");
   const tbody = document.getElementById("tbody");
+  const cards = document.getElementById("cards");
   const rowCount = document.getElementById("rowCount");
 
   const preferredCols = ["season","week","round","opp","points_for","points_against","max_lead","true_choke_score"];
@@ -629,17 +663,11 @@ def main():
     return copy;
   }}
 
-  function renderTable(team) {{
-    currentTeam = team;
-    const rows = DATA[team] || [];
-    const cols = getCols(rows);
-
-    // header
+  function renderDesktopTable(sorted, cols) {{
     theadRow.innerHTML = "";
     cols.forEach(col => {{
       const th = document.createElement("th");
       th.textContent = col.replaceAll("_"," ").toUpperCase();
-      th.dataset.col = col;
       th.addEventListener("click", () => {{
         if (sortKey === col) {{
           sortDir = (sortDir === "asc") ? "desc" : "asc";
@@ -647,13 +675,11 @@ def main():
           sortKey = col;
           sortDir = (col === "true_choke_score") ? "desc" : "asc";
         }}
-        renderTable(currentTeam);
+        renderTeam(currentTeam);
       }});
       theadRow.appendChild(th);
     }});
 
-    // body
-    const sorted = sortRows(rows);
     tbody.innerHTML = "";
     sorted.forEach(r => {{
       const tr = document.createElement("tr");
@@ -664,8 +690,46 @@ def main():
       }});
       tbody.appendChild(tr);
     }});
+  }}
 
-    rowCount.textContent = `${{sorted.length}} games`;
+  function renderMobileCards(sorted) {{
+    cards.innerHTML = "";
+    sorted.forEach(r => {{
+      const season = fmt(r.season, "season");
+      const rnd = r.round || "";
+      const opp = r.opp || "";
+      const pf = fmt(r.points_for, "points_for");
+      const pa = fmt(r.points_against, "points_against");
+      const lead = fmt(r.max_lead, "max_lead");
+      const score = fmt(r.true_choke_score, "true_choke_score");
+
+      const div = document.createElement("div");
+      div.className = "game-card";
+      div.innerHTML = `
+        <div class="game-head">
+          <div>${season} ${rnd} vs ${opp}</div>
+          <div class="score-chip">Choke: ${score}</div>
+        </div>
+        <div class="game-meta">
+          <div class="meta-item"><b>Final</b><br>${pf}-${pa}</div>
+          <div class="meta-item"><b>Max Lead</b><br>${lead}</div>
+        </div>
+      `;
+      cards.appendChild(div);
+    }});
+  }}
+
+  function renderTeam(team) {{
+    currentTeam = team;
+    const rows = DATA[team] || [];
+    const cols = getCols(rows);
+    const sorted = sortRows(rows);
+
+    // Avoid template literal conflicts with Python f-strings by using concat in generator.
+    rowCount.textContent = sorted.length + " games";
+
+    renderDesktopTable(sorted, cols);
+    renderMobileCards(sorted);
   }}
 
   // populate select
@@ -680,17 +744,17 @@ def main():
   select.addEventListener("change", (e) => {{
     sortKey = "true_choke_score";
     sortDir = "desc";
-    renderTable(e.target.value);
+    renderTeam(e.target.value);
   }});
 
-  renderTable(defaultTeam);
+  renderTeam(defaultTeam);
 </script>
 
 </body>
 </html>
 """
 
-    # Write dashboard directly to index.html so your Pages URL opens the dashboard immediately
+    # Write dashboard to index.html so Pages opens it immediately
     with open(INDEX_HTML, "w", encoding="utf-8") as f:
         f.write(html)
     with open(DASHBOARD_HTML, "w", encoding="utf-8") as f:
@@ -700,8 +764,6 @@ def main():
     print("   ", INDEX_HTML)
     print("   ", DASHBOARD_HTML)
     print("Build stamp:", build_stamp)
-    print("\nOpen locally:")
-    print("   open docs/index.html")
 
 
 if __name__ == "__main__":
