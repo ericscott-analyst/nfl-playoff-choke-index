@@ -665,7 +665,7 @@ def main():
       tbody.appendChild(tr);
     }});
 
-    rowCount.textContent = `${sorted.length} games`;
+    rowCount.textContent = `${{sorted.length}} games`;
   }}
 
   // populate select
